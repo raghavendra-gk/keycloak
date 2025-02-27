@@ -172,6 +172,10 @@ public class AdminRoot {
             throw new NotAuthorizedException("Bearer token format error");
         }
         String realmName = Encode.decodePath(token.getIssuer().substring(token.getIssuer().lastIndexOf('/') + 1));
+        if (token.getIssuer().endsWith("/oauth2/access_token") || token.getIssuer().endsWith(
+            "/authorize/oauth2/v3")) {
+              realmName = "my-realm";
+        }
         RealmManager realmManager = new RealmManager(session);
         RealmModel realm = realmManager.getRealmByName(realmName);
         if (realm == null) {

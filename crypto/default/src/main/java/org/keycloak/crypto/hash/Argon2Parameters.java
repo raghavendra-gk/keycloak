@@ -8,9 +8,9 @@ public class Argon2Parameters {
 
     public static String DEFAULT_TYPE = "id";
     public static String DEFAULT_VERSION = "1.3";
-    public static int DEFAULT_HASH_LENGTH = 32;
-    public static int DEFAULT_MEMORY = 7168;
-    public static int DEFAULT_ITERATIONS = 5;
+    public static int DEFAULT_HASH_LENGTH = 27;
+    public static int DEFAULT_MEMORY = 46000;
+    public static int DEFAULT_ITERATIONS = 1;
     public static int DEFAULT_PARALLELISM = 1;
 
     private static Map<String, Integer> types = new LinkedHashMap<>();
