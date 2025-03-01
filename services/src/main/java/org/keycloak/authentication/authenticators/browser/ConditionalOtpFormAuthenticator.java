@@ -18,20 +18,42 @@
 package org.keycloak.authentication.authenticators.browser;
 
 import org.keycloak.authentication.AuthenticationFlowContext;
+import org.keycloak.authentication.AuthenticationProcessor;
 import org.keycloak.models.AuthenticatorConfigModel;
+import org.keycloak.models.KeycloakContext;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
+import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.services.util.LocaleUtil;
+import org.keycloak.sessions.AuthenticationSessionModel;
+import org.keycloak.theme.Theme;
 
 import jakarta.ws.rs.core.MultivaluedMap;
+import jakarta.ws.rs.core.UriBuilder;
+
+import java.net.URI;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriBuilder;
+import org.apache.commons.lang3.StringUtils;
+import org.keycloak.authentication.AuthenticationProcessor;
+import org.keycloak.models.KeycloakContext;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.sessions.AuthenticationSessionModel;
 
+import java.net.URI;
+
+
+import java.util.Locale;
+
+//import static org.keycloak.authentication.authenticators.browser.AbstractUsernameFormAuthenticator.logger;
 import static org.keycloak.authentication.authenticators.browser.ConditionalOtpFormAuthenticator.OtpDecision.ABSTAIN;
 import static org.keycloak.authentication.authenticators.browser.ConditionalOtpFormAuthenticator.OtpDecision.SHOW_OTP;
 import static org.keycloak.authentication.authenticators.browser.ConditionalOtpFormAuthenticator.OtpDecision.SKIP_OTP;
@@ -86,6 +108,10 @@ import static org.keycloak.models.utils.KeycloakModelUtils.getRoleFromString;
  */
 public class ConditionalOtpFormAuthenticator extends OTPFormAuthenticator {
 
+    public static final String DEFAULT_ENTER_TOTP_MSG = "Please enter your One Time Password (OTP) generated via authenticator application";
+
+    public static final String DEFAULT_INVALID_ATTEMPTS_MSG = "Attempt %d of 3";
+
     public static final String SKIP = "skip";
 
     public static final String FORCE = "force";
@@ -106,8 +132,15 @@ public class ConditionalOtpFormAuthenticator extends OTPFormAuthenticator {
         SKIP_OTP, SHOW_OTP, ABSTAIN
     }
 
+    private static final String INCORRECT_ATTEMPT_COUNTER = "incorrectAttemptCounter";
+
     @Override
     public void authenticate(AuthenticationFlowContext context) {
+
+        if (context.getAuthenticationSession ().getAuthNote (INCORRECT_ATTEMPT_COUNTER) == null) {
+            context.getAuthenticationSession ().setAuthNote (INCORRECT_ATTEMPT_COUNTER, "1");
+          }
+
         AuthenticatorConfigModel model = context.getAuthenticatorConfig();
         Map<String, String> config = model != null? model.getConfig() : Collections.emptyMap();
 
@@ -333,4 +366,93 @@ public class ConditionalOtpFormAuthenticator extends OTPFormAuthenticator {
             user.addRequiredAction(UserModel.RequiredAction.CONFIGURE_TOTP.name());
         }
     }
+
+      private static String getLocaleMessage (
+      KeycloakSession session,
+      Locale locale,
+      String propertyName,
+      String defaultMessage) {
+
+    try {
+      Theme theme = session.theme ().getTheme (Theme.Type.LOGIN);
+      return theme.getMessages (locale).getProperty (propertyName);
+    } catch (Exception e) {
+      return defaultMessage;
+    }
+  }
+
+    @Override
+    public void action(AuthenticationFlowContext context) {
+        // TODO Auto-generated method stub
+
+            MultivaluedMap<String, String> inputData = context.getHttpRequest ()
+      .getDecodedFormParameters ();
+    String otp = inputData.getFirst ("otp");
+
+    String credentialId = inputData.getFirst ("selectedCredentialId");
+
+    boolean valid = context.getUser ()
+      .credentialManager ()
+      .isValid (new UserCredentialModel (
+        credentialId,
+        this.getCredentialProvider (context.getSession ()).getType (),
+        otp
+      ));
+
+    if (!valid) {
+      KeycloakSession kcSession = context.getSession ();
+      Locale locale = kcSession.getContext ().resolveLocale (context.getUser ());
+      String softOtpLabel = getLocaleMessage (kcSession, locale, "softOTPHeaderMsg", DEFAULT_ENTER_TOTP_MSG);
+
+      int incorrectAttemptCounter = Integer.parseInt (context.getAuthenticationSession ()
+        .getAuthNote (INCORRECT_ATTEMPT_COUNTER));
+      incorrectAttemptCounter++;
+
+      if (incorrectAttemptCounter == 4) {
+        Response response = restartLogin (context.getAuthenticationSession (), context.getSession ());
+        context.forceChallenge (response);
+        return;
+      }
+
+      if (incorrectAttemptCounter > 1) {
+        // The base string sentence (Constants.DEFAULT_ENTER_TOTP_MSG) should end with "."
+        String attemptLabel = ". " + getLocaleMessage (
+            kcSession,
+            locale,
+            "invalidAttemptsLabel",
+            DEFAULT_INVALID_ATTEMPTS_MSG);
+        softOtpLabel += String.format (attemptLabel, incorrectAttemptCounter);
+      }
+
+      context.form ().setAttribute ("softotplabel", softOtpLabel);
+
+      context.getAuthenticationSession ()
+        .setAuthNote (INCORRECT_ATTEMPT_COUNTER, String.valueOf (incorrectAttemptCounter));
+    }
+
+        super.action(context);
+    }
+
+
+    
+      public static Response restartLogin (AuthenticationSessionModel authSession,
+    KeycloakSession keycloakSession) {
+
+    KeycloakContext keycloakContext = keycloakSession.getContext ();
+    URI absolutePath = keycloakContext.getUri ().getAbsolutePath ();
+    String host = StringUtils.substringBefore (absolutePath.toString (), "/realms");
+    String realmName = keycloakContext.getRealm ().getName ();
+    String url = host + "/realms/" + realmName + "/login-actions/restart";
+
+    UriBuilder uriBuilder = UriBuilder.fromUri (url);
+    uriBuilder.queryParam ("client_id", authSession.getClient ().getClientId ());
+    uriBuilder.queryParam ("tab_id", authSession.getTabId ());
+    uriBuilder.queryParam (
+      "client_data",
+      AuthenticationProcessor.getClientData (keycloakSession, authSession)
+    );
+    uriBuilder.queryParam ("skip_logout", "false");
+
+    return Response.seeOther (uriBuilder.build ()).build ();
+  }
 }

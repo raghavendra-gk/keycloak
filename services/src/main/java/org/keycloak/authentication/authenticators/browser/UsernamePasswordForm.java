@@ -25,10 +25,15 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.services.managers.AuthenticationManager;
+import org.keycloak.sessions.AuthenticationSessionModel;
 
 import jakarta.ws.rs.core.MultivaluedHashMap;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
+
+import static org.keycloak.protocol.oidc.OIDCLoginProtocol.PROMPT_PARAM;
+import static org.keycloak.protocol.oidc.OIDCLoginProtocol.PROMPT_VALUE_CONSENT;
+import org.apache.commons.lang3.StringUtils;
 
 /**
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
@@ -46,6 +51,34 @@ public class UsernamePasswordForm extends AbstractUsernameFormAuthenticator impl
         if (!validateForm(context, formData)) {
             return;
         }
+
+            /*
+     ******************* Start : Customization *******************
+     *
+     * Revoking the consent given to the client if save_consent flag is false
+     */
+    KeycloakSession session = context.getSession ();
+    String userId = context.getUser ().getId ();
+    AuthenticationSessionModel authenticationSession = context.getAuthenticationSession ();
+    String clientId = authenticationSession.getClient ().getId ();
+    // get it from custome consent store
+    boolean isConsentSaved = null!=session.users().getConsentByClient(null, userId, clientId);
+
+    if (!isConsentSaved) {
+      // save_consent is false. Let's delete all the granted consents and
+      // allow KC to re-perform adding consent to clients .
+      session.users ().revokeConsentForClient (session.getContext ().getRealm (), userId, clientId);
+
+      String promptParam = authenticationSession.getClientNote (PROMPT_PARAM);
+      // Let's add prompt=consent forcefully since the consent is not saved.
+      promptParam = StringUtils.isBlank (promptParam)
+        ? PROMPT_VALUE_CONSENT
+        : promptParam + " " + PROMPT_VALUE_CONSENT;
+      authenticationSession.setClientNote (PROMPT_PARAM, promptParam);
+    }
+    /*
+     ******************* End : Customization *******************
+     */
         context.success();
     }
 

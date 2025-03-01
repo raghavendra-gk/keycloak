@@ -51,6 +51,25 @@ public class DefaultCookieProvider implements CookieProvider {
 
     @Override
     public void set(CookieType cookieType, String value, int maxAge) {
+
+    /*
+    * DN: By default, for the cookies, KEYCLOAK_IDENTITY and KEYCLOAK_IDENTITY_LEGACY, expiry is
+    * set as per the realm setting "ssoSessionMaxLifespan" (7 days in our case).
+    * And, for the cookie, KEYCLOAK_REMEMBER_ME, expiry is hardcoded to 365 days.
+    *
+    * Both these configurations doesn't match with what we need.
+    * Expiry time of hsdpamcookie (eq. of KEYCLOAK_IDENTITY) is browser session based, and
+    * login cookie (eq. of KEYCLOAK_REMEMBER_ME) is 20 days.
+    * To maintain backward compatibility, changing the maxAge (expiry) for
+    * above-mentioned KC's cookies.
+    * */
+    if (cookieType.getName ().startsWith (CookieType.IDENTITY.getName ())) {
+        // In KC, "-1" symbolizes browser session expiry
+        maxAge = -1;
+      } else if (CookieType.LOGIN_HINT.getName ().equals (cookieType.getName ())) {
+        maxAge = 20 * 24 * 60 * 60;
+      }
+
         String name = cookieType.getName();
         NewCookie.SameSite sameSite = cookieType.getScope().getSameSite();
         if (NewCookie.SameSite.NONE.equals(sameSite) && !secure) {

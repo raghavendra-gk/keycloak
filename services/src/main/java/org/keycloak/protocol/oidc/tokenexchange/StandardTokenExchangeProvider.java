@@ -100,7 +100,8 @@ public class StandardTokenExchangeProvider extends AbstractTokenExchangeProvider
             throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_REQUEST, "subject_token_type parameter not provided", Response.Status.BAD_REQUEST);
         }
 
-        if (!subjectTokenType.equals(OAuth2Constants.ACCESS_TOKEN_TYPE)) {
+        if (!(subjectTokenType.equals(OAuth2Constants.ACCESS_TOKEN_TYPE) || 
+            subjectTokenType.equals(OAuth2Constants.ID_TOKEN))) {
             event.detail(Details.REASON, "subject_token supports access tokens only");
             event.error(Errors.INVALID_TOKEN);
             throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_REQUEST, "Invalid token type, must be access token", Response.Status.BAD_REQUEST);

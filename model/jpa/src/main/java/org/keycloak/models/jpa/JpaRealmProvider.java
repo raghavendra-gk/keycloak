@@ -32,7 +32,11 @@ import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.MapJoin;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
+
+import java.nio.charset.StandardCharsets;
+import java.security.spec.KeySpec;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +45,13 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
 import org.hibernate.Session;
 import org.jboss.logging.Logger;
 import org.keycloak.client.clienttype.ClientTypeManager;
@@ -805,7 +816,7 @@ public class JpaRealmProvider implements RealmProvider, ClientProvider, ClientSc
         entity.setRealmId(realm.getId());
         em.persist(entity);
 
-        resource = toClientModel(realm, entity);
+        resource = customToClientModel(realm, entity);//toClientModel(realm, entity);
 
         session.getKeycloakSessionFactory().publish((ClientModel.ClientCreationEvent) () -> resource);
         return resource;
@@ -1325,4 +1336,107 @@ public class JpaRealmProvider implements RealmProvider, ClientProvider, ClientSc
     private void fireGroupCreatedEvent(GroupAdapter group) {
         GroupCreatedEvent.fire(group, session);
     }
+
+    //// Store client secrete in encrypted form...
+    // If secret/key from Keycloak getRealm().getComponent("aes-generated").get("secret")
+    // is used, encryption will be specific for each keycloak instance.
+    // Based on whether we supply our own keys and how we manage it - can decide on this.
+    static String passcode = null;
+    static String salt = "salt";
+    final KeycloakSession session;
+
+    static {
+
+        Map<String, String> envs = System.getenv ();
+        passcode = envs.get ("CLIENT_ENCRYPTION_KEY");
+
+    }
+
+    private static String encrypt (String plaintext) {
+
+    String encryptedBase64 = plaintext;
+    if (null != plaintext && null != passcode) {
+      try {
+        Cipher cipher = Cipher.getInstance (TRANSFORMATION);
+        cipher.init (Cipher.ENCRYPT_MODE, getKeyFromPassword (passcode, salt));
+        byte [] encryptedBytes = cipher.doFinal (plaintext.getBytes (StandardCharsets.UTF_8));
+        encryptedBase64 = Base64.getEncoder ().encodeToString (encryptedBytes);
+      } catch (Exception ee) {
+        logger
+          .error (ee.getMessage () + Arrays.stream (ee.getStackTrace ()).toList ());
+      }
+    }
+    return encryptedBase64;
+  }
+
+  private static String decrypt (String encryptedBase64) {
+
+    String decryptedText = encryptedBase64;
+    if (null != encryptedBase64 && null != passcode) {
+      try {
+        Cipher cipher = Cipher.getInstance (TRANSFORMATION);
+        cipher.init (Cipher.DECRYPT_MODE, getKeyFromPassword (passcode, salt));
+        byte [] encryptedBytes = Base64.getDecoder ().decode (encryptedBase64);
+        byte [] decryptedBytes = cipher.doFinal (encryptedBytes);
+        decryptedText = new String (decryptedBytes, StandardCharsets.UTF_8);
+      } catch (Exception ee) {
+        logger
+          .error (ee.getMessage () + Arrays.stream (ee.getStackTrace ()).toList ());
+      }
+    }
+    return decryptedText;
+  }
+
+  public static SecretKey getKeyFromPassword (String password, String salt) {
+
+    SecretKey secret = null;
+    try {
+      SecretKeyFactory factory = SecretKeyFactory.getInstance ("PBKDF2WithHmacSHA256");
+      // refer : encodedCredential@Pbkdf2PasswordHashProvider.java & reduce iterations for
+      // performance
+      KeySpec spec = new PBEKeySpec (
+        password.toCharArray (),
+        salt.getBytes (StandardCharsets.UTF_8),
+        65536,
+        256);
+      secret = new SecretKeySpec (factory.generateSecret (spec).getEncoded (), "AES");
+      return secret;
+    } catch (Exception ee) {
+      logger
+        .error (ee.getMessage () + Arrays.stream (ee.getStackTrace ()).toList ());
+    }
+    return secret;
+  }
+
+  private ClientModel customToClientModel (RealmModel realm, ClientEntity client) {
+
+    ClientAdapter adapter = new ClientAdapter (realm, this.em, this.session, client) {
+      @Override
+      public boolean validateSecret (String secret) {
+
+        return super.validateSecret (encrypt (secret));
+      }
+
+      @Override
+      public void setSecret (String secret) {
+
+        String encrypted = encrypt (secret);
+        super.setSecret (encrypted);
+      }
+
+      @Override
+      public String getSecret () {
+
+        return decrypt (super.getSecret ());
+      }
+    };
+
+    if (Profile.isFeatureEnabled (Profile.Feature.CLIENT_TYPES)) {
+      ClientTypeManager mgr = this.session.getProvider (ClientTypeManager.class);
+      return mgr.augmentClient (adapter);
+    } else {
+      return adapter;
+    }
+  }
+
 }
